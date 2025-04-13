@@ -9,7 +9,7 @@ Layer 4: The AI Absorption Engine
 Layer 5: The Self-Rebuilding Walls
 Layer 6: The Last Stand – Total Surrender
 Layer 7: The Sudarshan Protocol – Universal Domination
-
+There are Only 7 Visible layer but Infinite factors working to make this sytem so strong and Working to provide resources to the Creator.
 
 
 
