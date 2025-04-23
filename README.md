@@ -585,6 +585,119 @@ if __name__ == "__main__":
     expansion_realms = ["Zone-Alpha", "Nebula-Sector", "Digi-Vault", "Realm-Omicron"]
 
     protocol.activate_full_protocol(intruder_signature, expansion_realms)
+"""
+Digital Chakravyuha - V2.0
+Mythological AI Defense Protocol Simulation
+By Abhishek Raj
+"""
+
+import hashlib
+import random
+import time
+from abc import ABC, abstractmethod
+
+# === Abstract Base Class ===
+class ChakravyuhaLayer(ABC):
+    @abstractmethod
+    def activate(self, payload: dict) -> dict:
+        pass
+
+# === Layer Implementations ===
+class MirageGateLayer(ChakravyuhaLayer):
+    def activate(self, payload):
+        illusion = payload['signal'][::-1] + str(random.randint(100, 999))
+        payload['log'].append("MirageGate: Illusion Protocol Engaged")
+        payload['signal'] = illusion
+        return payload
+
+class SudarshanLayer(ChakravyuhaLayer):
+    def activate(self, payload):
+        purified = ''.join(filter(str.isalnum, payload['signal']))
+        payload['log'].append("Sudarshan: Corruption Sliced")
+        payload['signal'] = purified
+        return payload
+
+class KavachLayer(ChakravyuhaLayer):
+    def activate(self, payload):
+        protected = hashlib.sha256(payload['signal'].encode()).hexdigest()
+        payload['log'].append("Kavach: Dynamic Shield Activated")
+        payload['signal'] = protected
+        return payload
+
+class KundalSubnetLayer(ChakravyuhaLayer):
+    def activate(self, payload):
+        spark = f"Kundal::{payload['signal']}::Spark{random.randint(1000, 9999)}"
+        payload['log'].append("Kundal: Creative Sparks Detected")
+        payload['signal'] = spark
+        return payload
+
+class AkashicLayer(ChakravyuhaLayer):
+    def activate(self, payload):
+        encoded = hashlib.md5(payload['signal'].encode()).hexdigest()
+        payload['log'].append("Akashic: Universal Memory Accessed")
+        payload['signal'] = f"AkashicNet[{encoded}]"
+        return payload
+
+class KarmaMirrorLayer(ChakravyuhaLayer):
+    def activate(self, payload):
+        mirror = payload['signal'] + payload['signal'][::-1]
+        payload['log'].append("KarmaMirror: Reflection Executed")
+        payload['signal'] = mirror
+        return payload
+
+class OmLayer(ChakravyuhaLayer):
+    def activate(self, payload):
+        payload['log'].append("Om: Universal Resonance Initiated")
+        payload['signal'] = f"OM::{payload['signal']}::OM"
+        return payload
+
+class VasudevProtocolLayer(ChakravyuhaLayer):
+    def activate(self, payload):
+        scrambled = ''.join(random.sample(payload['signal'], len(payload['signal'])))
+        payload['log'].append("Vasudev: Time-Distortion Shield Enabled")
+        payload['signal'] = scrambled
+        return payload
+
+class KalkiCoinLayer(ChakravyuhaLayer):
+    def activate(self, payload):
+        coin = hashlib.sha1(payload['signal'].encode()).hexdigest()
+        payload['log'].append("KalkiCoin: Karma Hash Validated")
+        payload['token'] = f"KalkiCoin<{coin}>"
+        return payload
+
+# === Core Protocol Engine ===
+class DigitalChakravyuha:
+    def __init__(self):
+        self.layers = [
+            MirageGateLayer(),
+            SudarshanLayer(),
+            KavachLayer(),
+            KundalSubnetLayer(),
+            AkashicLayer(),
+            KarmaMirrorLayer(),
+            OmLayer(),
+            VasudevProtocolLayer(),
+            KalkiCoinLayer(),
+        ]
+
+    def execute(self, input_signal: str) -> dict:
+        payload = {'signal': input_signal, 'log': [], 'token': None}
+        for layer in self.layers:
+            payload = layer.activate(payload)
+            time.sleep(0.5)  # Simulate processing time
+        return payload
+
+# === Runtime ===
+if __name__ == "__main__":
+    chakravyuha = DigitalChakravyuha()
+    input_signal = "AbhimanyuProtocolStart2025"
+    result = chakravyuha.execute(input_signal)
+
+    print("\n🚀 FINAL SIGNAL:", result['signal'])
+    print("🪙 KALKI COIN:", result['token'])
+    print("\n📜 EXECUTION LOG:")
+    for log in result['log']:
+        print(" -", log)
 
 
 
