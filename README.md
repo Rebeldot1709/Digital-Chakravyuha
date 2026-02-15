@@ -688,16 +688,7 @@ class DigitalChakravyuha:
         return payload
 
 # === Runtime ===
-if __name__ == "__main__":
-    chakravyuha = DigitalChakravyuha()
-    input_signal = "AbhimanyuProtocolStart2025"
-    result = chakravyuha.execute(input_signal)
 
-    print("\n🚀 FINAL SIGNAL:", result['signal'])
-    print("🪙 KALKI COIN:", result['token'])
-    print("\n📜 EXECUTION LOG:")
-    for log in result['log']:
-        print(" -", log)
 
 
 
