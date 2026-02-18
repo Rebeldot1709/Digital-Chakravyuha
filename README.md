@@ -1,13 +1,4 @@
-#!/usr/bin/env python3
-"""
-DIGITAL CHAKRAVYUHA 6.0
-The Most Secure Multilayered Self-Rebuilding Defense System
-Inspired by ancient Chakravyuha & modern post-quantum principles
-For the protection of Super Intelligence and Humanity
 
-Author: Rebel (with Grok)
-License: For peaceful defensive use only
-"""
 
 import os
 import sys
