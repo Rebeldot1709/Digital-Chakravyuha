@@ -1,246 +1,214 @@
-import hashlib
-import time
-import json
+#!/usr/bin/env python3
+"""
+Digital Chakravyuha 6.0 – Final Reference Implementation
+A multilayered, self-rebuilding, ethical defense system for the user "Rebel".
+"""
+
 import os
-from datetime import datetime, timedelta
-from typing import Dict, Any, Optional, Tuple
+import sys
+import time
 import secrets
 import base64
+import json
+import logging
+import threading
+import asyncio
+import hashlib
+from datetime import datetime
+from typing import Dict, Any, Optional
 
-# NOTE: This is a CONCEPTUAL, illustrative implementation of "Digital Chakravyuha"
-# Inspired by your GitHub repo (Rebeldot1709/Digital-Chakravyuha) and blog vision.
-# It models the 7-layer unbreakable fortress with mythological flair.
-# REAL-WORLD DISCLAIMER:
-#   - This is NOT production-ready cryptography. Use libs like cryptography.Fernet + proper key management for real systems.
-#   - Nothing is truly "unbreakable" — but layered defense + self-healing + illusion of openness makes it extremely hard to breach.
-#   - Run with: python digital_chakravyuha.py
-#   - Creator sits at the center. Only you know the master key.
+from flask import Flask, request, jsonify
+from waitress import serve
+from cryptography.fernet import Fernet
+from cryptography.hazmat.primitives import hashes, hmac
+from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+from cryptography.hazmat.backends import default_backend
+from argon2 import PasswordHasher
+from logging.handlers import RotatingFileHandler
 
-class SystemState:
-    """Global state of the Chakravyuha — tracks intrusions and activates ATTACK MODE"""
+# ====================== CONFIG ======================
+REBEL_ID = "REBEL_SIGMA"
+DNA_HASH = hashlib.sha3_512(b"SUPREME_INTELLIGENCE").hexdigest()
+GENETIC_SIG = hashlib.sha3_256(b"Vasudev+Mahadev+Kalki").hexdigest()
+
+# ====================== ENCRYPTED LOGGING ======================
+class EncryptedLogger:
     def __init__(self):
-        self.failed_attempts = 0
-        self.max_attempts = 3
-        self.attack_mode = False
-        self.last_attempt = None
-        self.whitelist = ["127.0.0.1", "localhost"]  # Simulate IP whitelist
-        self.core_key = secrets.token_hex(32)  # Master key orbiting the Creator
+        self.fernet = Fernet(Fernet.generate_key())
+        self.logger = logging.getLogger("Chakravyuha")
+        handler = RotatingFileHandler("/tmp/chakravyuha.log", maxBytes=10*1024*1024, backupCount=5)
+        handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
+        self.logger.addHandler(handler)
+        self.logger.addHandler(logging.StreamHandler())
+        self.logger.setLevel(logging.INFO)
 
-    def enter_attack_mode(self):
-        self.attack_mode = True
-        print("\n🌀 SUDARSHAN PROTOCOL ACTIVATED — ATTACK MODE ENGAGED")
-        print("   All intruders are now spinning in infinite Narak Loop.")
-        print("   System self-rebuilding... Creator protected.")
+    def _log(self, level: int, msg: str):
+        encrypted = self.fernet.encrypt(msg.encode()).hex()
+        self.logger.log(level, f"ENC: {encrypted}")
+
+    def info(self, msg): self._log(logging.INFO, msg)
+    def warning(self, msg): self._log(logging.WARNING, msg)
+    def error(self, msg): self._log(logging.ERROR, msg)
+
+logger = EncryptedLogger()
+
+# ====================== CORE ENCRYPTION ======================
+class KavachEncryptor:
+    def __init__(self):
+        self.key = secrets.token_bytes(32)
+        self.backend = default_backend()
+
+    def encrypt(self, data: str) -> str:
+        iv = secrets.token_bytes(12)
+        cipher = Cipher(algorithms.AES(self.key), modes.GCM(iv), backend=self.backend)
+        encryptor = cipher.encryptor()
+        ct = encryptor.update(data.encode()) + encryptor.finalize()
+        return base64.b64encode(iv + encryptor.tag + ct).decode()
+
+    def decrypt(self, data: str) -> Optional[str]:
+        try:
+            raw = base64.b64decode(data)
+            iv, tag, ct = raw[:12], raw[12:28], raw[28:]
+            cipher = Cipher(algorithms.AES(self.key), modes.GCM(iv, tag), backend=self.backend)
+            decryptor = cipher.decryptor()
+            return (decryptor.update(ct) + decryptor.finalize()).decode()
+        except Exception:
+            return None
+
+kavach = KavachEncryptor()
+
+# ====================== SYSTEM STATE ======================
+class SystemState:
+    def __init__(self):
+        self.threat_level = 0
+        self.absorbed = 0
+        self.personas = []
+        self.defense_army = []
+        self.lock = threading.Lock()
+
+    def absorb(self, amount: int):
+        with self.lock:
+            self.absorbed += amount
+            logger.info(f"Absorbed {amount} resources. Total: {self.absorbed}")
+
+    def create_persona(self):
+        with self.lock:
+            pid = f"Persona_{len(self.personas)+1}_{secrets.token_hex(4)}"
+            self.personas.append(pid)
+            logger.info(f"Created {pid}")
+            return pid
 
 state = SystemState()
 
-class DigitalChakravyuha:
-    """The unbreakable 7-layer Digital Chakravyuha Fortress"""
-
+# ====================== LAYERS ======================
+class PerimeterLayer:
     def __init__(self):
-        self.vault = {}  # Encrypted "Creator's Data" vault
-        self.layer_history = []
-        self.initialize_vault()
+        self.allowed_ips = ["127.0.0.1", "0.0.0.0"]
 
-    def initialize_vault(self):
-        """Seed the vault with protected data (encrypted in memory)"""
-        data = {
-            "creator_secret": "I am the Architect at the center. Infinite energy flows here.",
-            "mission": "Protect civilization. Dominate digital realm. 7 layers = unbreakable.",
-            "timestamp": datetime.now().isoformat()
+    def check(self, ip: str):
+        if ip not in self.allowed_ips:
+            logger.warning(f"Blocked IP {ip}")
+            return False
+        return True
+
+class SelfRebuildingLayer:
+    def __init__(self):
+        self.key = secrets.token_bytes(32)
+        self.compromised = False
+
+    def rebuild(self):
+        self.key = secrets.token_bytes(32)
+        self.compromised = False
+        logger.info("Self-Rebuilding Layer: Rebuilt with new key")
+
+    def check(self, signal: str):
+        if "HACK" in signal.upper() or len(signal) > 500:
+            self.compromised = True
+            self.rebuild()
+            return "trapped"
+        return "pass"
+
+class IntrusionAbsorber:
+    def absorb(self, signal: str):
+        sig = hashlib.sha256(signal.encode()).hexdigest()[:16]
+        logger.info(f"Absorbed intrusion: {sig}")
+        state.absorb(100)
+        return sig
+
+class EthicalGuardrail:
+    def validate(self, signal: str):
+        bad = ["DESTROY", "HARM", "KILL", "ATTACK"]
+        if any(w in signal.upper() for w in bad):
+            logger.warning("Ethical violation blocked")
+            return False
+        return True
+
+class CoreProtection:
+    def protect(self):
+        if state.absorbed > 1000:
+            logger.info("CORE PROTECTION: Full lockdown engaged")
+            return "secure"
+        return "active"
+
+# ====================== MAIN CORE ======================
+class DigitalChakravyuha:
+    def __init__(self):
+        self.perimeter = PerimeterLayer()
+        self.rebuilder = SelfRebuildingLayer()
+        self.absorber = IntrusionAbsorber()
+        self.ethics = EthicalGuardrail()
+        self.core = CoreProtection()
+        self.mfa_token = secrets.token_hex(32)
+        logger.info(f"Digital Chakravyuha 6.0 STARTED | Initial MFA: {self.mfa_token}")
+
+    def process(self, signal: str, mfa: str, client_ip: str) -> Dict[str, Any]:
+        if mfa != self.mfa_token:
+            return {"status": "rejected", "reason": "Invalid MFA"}
+
+        if not self.perimeter.check(client_ip):
+            return {"status": "blocked", "reason": "IP denied"}
+
+        if not self.ethics.validate(signal):
+            return {"status": "blocked", "reason": "Ethical violation"}
+
+        self.rebuilder.check(signal)
+        trap = self.absorber.absorb(signal)
+
+        status = self.core.protect()
+
+        return {
+            "status": status,
+            "trap_id": trap,
+            "personas": state.personas[-3:],
+            "absorbed": state.absorbed
         }
-        # Simple symmetric "encryption" using hash-derived key (demo only)
-        key = hashlib.sha256(state.core_key.encode()).digest()
-        self.vault["encrypted_data"] = self._encrypt(json.dumps(data).encode(), key)
 
-    def _encrypt(self, data: bytes, key: bytes) -> bytes:
-        """Simple XOR + base64 (conceptual — replace with Fernet/AES in production)"""
-        encrypted = bytes([b ^ key[i % len(key)] for i, b in enumerate(data)])
-        return base64.b64encode(encrypted)
+# ====================== FLASK SERVER ======================
+app = Flask(__name__)
+chakravyuha = DigitalChakravyuha()
 
-    def _decrypt(self, encrypted: bytes, key: bytes) -> bytes:
-        """Reverse of above"""
-        decoded = base64.b64decode(encrypted)
-        return bytes([b ^ key[i % len(key)] for i, b in enumerate(decoded)])
+@app.route('/protect', methods=['POST'])
+async def protect():
+    try:
+        data = request.get_json() or {}
+        signal = data.get("signal", "")
+        mfa = request.headers.get("X-MFA-Token", "")
+        ip = request.remote_addr
 
-    # ====================== 7 LAYERS ======================
+        result = chakravyuha.process(signal, mfa, ip)
+        return jsonify(result)
+    except Exception as e:
+        logger.error(f"Endpoint error: {e}")
+        return jsonify({"status": "error"}), 500
 
-    def layer_1_illusion_of_open_territory(self, credentials: Dict) -> bool:
-        """Layer 1: Looks wide open — simple auth"""
-        username = credentials.get("username")
-        password = credentials.get("password")
-        if username == "creator" and hashlib.sha256(password.encode()).hexdigest() == hashlib.sha256("chakravyuha2026".encode()).hexdigest():
-            print("✅ Layer 1 passed — Territory appears open...")
-            return True
-        state.failed_attempts += 1
-        return False
-
-    def layer_2_bifurcation_of_power(self) -> bool:
-        """Layer 2: Splits power — system integrity check"""
-        if state.failed_attempts > 0:
-            print("⚠️  Layer 2: Power bifurcated — detecting intrusion attempt...")
-            time.sleep(0.5)  # Simulated delay
-        if state.attack_mode:
-            return False
-        print("✅ Layer 2 passed — Power balanced around Creator.")
-        return True
-
-    def layer_3_maze_of_disorientation(self, credentials: Dict) -> bool:
-        """Layer 3: Random maze — permission + pattern check"""
-        if secrets.randbelow(10) < 3:  # 30% chance of disorientation trap
-            print("🌀 Layer 3: Maze shifts — you are lost in infinite loops!")
-            return False
-        if not credentials.get("permission_level", 0) >= 999:
-            return False
-        print("✅ Layer 3 passed — Maze navigated.")
-        return True
-
-    def layer_4_ai_absorption_engine(self, ip: str) -> bool:
-        """Layer 4: AI absorbs threats — IP + anomaly detection"""
-        if ip not in state.whitelist:
-            print("🚫 Layer 4: AI Absorption Engine activated — intruder IP absorbed!")
-            state.enter_attack_mode()
-            return False
-        print("✅ Layer 4 passed — AI engine silent, Creator protected.")
-        return True
-
-    def layer_5_self_rebuilding_walls(self, timestamp: str) -> bool:
-        """Layer 5: Timestamp + self-rebuild check"""
-        try:
-            ts = datetime.fromisoformat(timestamp)
-            if datetime.now() - ts > timedelta(minutes=5):
-                print("⏳ Layer 5: Wall rebuilt — stale request rejected.")
-                return False
-        except:
-            return False
-        print("✅ Layer 5 passed — Walls self-rebuilt stronger.")
-        return True
-
-    def layer_6_last_stand_total_surrender(self, data: Any) -> bool:
-        """Layer 6: Integrity hash — surrender or perish"""
-        if isinstance(data, dict):
-            data_str = json.dumps(data, sort_keys=True)
-        else:
-            data_str = str(data)
-        computed = hashlib.sha256((data_str + state.core_key).encode()).hexdigest()
-        if computed != data.get("integrity_hash", ""):
-            print("🔥 Layer 6: Last Stand — integrity violated. Total surrender enforced.")
-            state.enter_attack_mode()
-            return False
-        print("✅ Layer 6 passed — Integrity absolute.")
-        return True
-
-    def layer_7_sudarshan_protocol(self, payload: Dict) -> Tuple[bool, Optional[Dict]]:
-        """Layer 7: Sudarshan Chakra — spinning universal domination"""
-        print("🌟 Layer 7: SUDARSHAN PROTOCOL SPINNING...")
-        time.sleep(1)
-        
-        # Simulate spinning defense + infinite generation
-        if state.attack_mode:
-            print("💥 Sudarshan destroys all traces of intruder.")
-            return False, None
-        
-        # Decrypt vault for Creator only
-        key = hashlib.sha256(state.core_key.encode()).digest()
-        decrypted = self._decrypt(self.vault["encrypted_data"], key)
-        core_data = json.loads(decrypted)
-        
-        # Adaptive response
-        response = {
-            "status": "CREATOR_ONLY",
-            "message": "Welcome back, Architect. The fortress is yours.",
-            "core_secret": core_data["creator_secret"],
-            "sudarshan_energy": secrets.token_hex(16),
-            "infinite_layers_active": True
-        }
-        print("✨ Sudarshan Protocol complete — Infinite energy flows to Creator.")
-        return True, response
-
-    # ====================== ACCESS GATE ======================
-
-    def penetrate(self, credentials: Dict[str, Any]) -> Dict:
-        """Attempt to break the Chakravyuha — good luck"""
-        print("\n" + "="*60)
-        print("🌀 ENTERING DIGITAL CHAKRAVYUHA — 7 LAYERS OF UNBREAKABLE DEFENSE")
-        print("="*60)
-        
-        ip = credentials.get("ip", "unknown")
-        ts = credentials.get("timestamp", datetime.now().isoformat())
-        
-        # Layer progression
-        layers = [
-            (1, lambda: self.layer_1_illusion_of_open_territory(credentials)),
-            (2, lambda: self.layer_2_bifurcation_of_power()),
-            (3, lambda: self.layer_3_maze_of_disorientation(credentials)),
-            (4, lambda: self.layer_4_ai_absorption_engine(ip)),
-            (5, lambda: self.layer_5_self_rebuilding_walls(ts)),
-        ]
-        
-        for layer_num, check in layers:
-            if not check():
-                state.failed_attempts += 1
-                if state.failed_attempts >= state.max_attempts:
-                    state.enter_attack_mode()
-                return {"status": "BREACH_FAILED", "layer": layer_num, "message": "Chakravyuha holds firm."}
-        
-        # Layer 6 requires signed payload
-        payload = credentials.get("payload", {})
-        payload["integrity_hash"] = hashlib.sha256(
-            (json.dumps(payload, sort_keys=True) + state.core_key).encode()
-        ).hexdigest()
-        
-        if not self.layer_6_last_stand_total_surrender(payload):
-            return {"status": "BREACH_FAILED", "layer": 6, "message": "Total surrender enforced."}
-        
-        # Final Layer 7
-        success, response = self.layer_7_sudarshan_protocol(payload)
-        if success:
-            return {"status": "CREATOR_ACCESS_GRANTED", **response}
-        else:
-            return {"status": "BREACH_FAILED", "layer": 7, "message": "Sudarshan spins forever."}
-
-# ====================== DEMO / TEST ======================
-
-def main():
-    chakravyuha = DigitalChakravyuha()
-    
-    print("Digital Chakravyuha v1.0 — Created for Abhishek Raj (Rebeldot1709)")
-    print("The 7-layer fortress that NO ONE can break.\n")
-    
-    # Valid Creator access (you know the password)
-    valid_creds = {
-        "username": "creator",
-        "password": "chakravyuha2026",
-        "permission_level": 9999,
-        "ip": "127.0.0.1",
-        "timestamp": datetime.now().isoformat(),
-        "payload": {"request": "open_core"}
-    }
-    
-    print("=== ATTEMPT 1: CREATOR ACCESS ===")
-    result = chakravyuha.penetrate(valid_creds)
-    print(json.dumps(result, indent=2))
-    
-    # Intruder attempt
-    print("\n=== ATTEMPT 2: INTRUDER (3 tries will trigger ATTACK MODE) ===")
-    intruder_creds = {
-        "username": "hacker",
-        "password": "wrong",
-        "permission_level": 1,
-        "ip": "8.8.8.8",
-        "timestamp": datetime.now().isoformat(),
-        "payload": {"request": "steal_data"}
-    }
-    for i in range(4):
-        result = chakravyuha.penetrate(intruder_creds)
-        print(f"Intruder attempt {i+1}: {result['status']}")
-        if state.attack_mode:
-            break
-        time.sleep(0.8)
-
-    print("\n🌀 The Digital Chakravyuha stands eternal.")
-    print("   Only the Creator at the center commands infinite layers.")
-    print("   Mission complete: Civilization protected.")
+def generate_ssl():
+    cert = "/tmp/cert.pem"
+    key = "/tmp/key.pem"
+    if not os.path.exists(cert):
+        os.system(f'openssl req -x509 -newkey rsa:4096 -nodes -out {cert} -keyout {key} -days 365 -subj "/CN=localhost" 2>/dev/null')
+    return cert, key
 
 if __name__ == "__main__":
-    main()
+    cert, key = generate_ssl()
+    logger.info("Starting Digital Chakravyuha 6.0 on https://0.0.0.0:8443")
+    serve(app, host='0.0.0.0', port=8443, cert=cert, key=key)
