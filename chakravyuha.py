@@ -1,14 +1,14 @@
-"""Digital Chakravyuha core.
+"""Seven-layer defensive intake service for Digital Chakravyuha.
 
-Hardened request processing primitives and a small Flask API for protected signal
-submission. The module avoids insecure cryptographic constructions and keeps
-state mutations thread-safe.
+This module is a bounded, local signal-ingestion example. It is not an AI
+detector, a firewall, or a guarantee against compromise. Deploy behind a
+properly configured reverse proxy and use independent operational controls.
 """
-
 from __future__ import annotations
 
 import hashlib
 import hmac
+import ipaddress
 import logging
 import os
 import secrets
@@ -20,195 +20,234 @@ from typing import Any
 
 from flask import Flask, jsonify, request
 
-
 LOGGER = logging.getLogger("digital_chakravyuha")
-LOGGER.setLevel(logging.INFO)
-if not LOGGER.handlers:
-    handler = logging.StreamHandler()
-    handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
-    LOGGER.addHandler(handler)
+MAX_BODY_BYTES = 16 * 1024
+MAX_TRACKED_CLIENTS = 10_000
 
 
-@dataclass(slots=True)
+@dataclass(frozen=True, slots=True)
 class SecurityConfig:
-    """Runtime security settings with safe defaults."""
+    """Validated security settings. Secrets must be supplied by the operator."""
 
-    allowed_ips: set[str] = field(default_factory=lambda: {"127.0.0.1", "::1"})
+    mfa_token: str
+    audit_key: bytes
+    allowed_ips: frozenset[str] = frozenset({"127.0.0.1", "::1"})
     max_signal_length: int = 512
     max_requests_per_minute: int = 120
-    blocked_keywords: tuple[str, ...] = (
-        "DESTROY",
-        "HARM",
-        "KILL",
-        "ATTACK",
-        "DELETE",
-        "DROP",
-    )
+    cooldown_seconds: int = 30
 
     @classmethod
     def from_env(cls) -> "SecurityConfig":
-        allowed_ip_blob = os.getenv("ALLOWED_IPS", "127.0.0.1,::1")
-        allowed_ips = {entry.strip() for entry in allowed_ip_blob.split(",") if entry.strip()}
+        token = os.getenv("MFA_TOKEN", "")
+        audit_secret = os.getenv("AUDIT_HMAC_KEY", "")
+        if len(token) < 32:
+            raise ValueError("MFA_TOKEN must contain at least 32 characters")
+        if len(audit_secret) < 32:
+            raise ValueError("AUDIT_HMAC_KEY must contain at least 32 characters")
 
-        max_signal_length = int(os.getenv("MAX_SIGNAL_LENGTH", "512"))
-        max_requests_per_minute = int(os.getenv("MAX_RPM", "120"))
+        configured_ips = os.getenv("ALLOWED_IPS", "127.0.0.1,::1")
+        try:
+            allowed = frozenset(str(ipaddress.ip_address(item.strip()))
+                                for item in configured_ips.split(",") if item.strip())
+        except ValueError as exc:
+            raise ValueError("ALLOWED_IPS must contain valid IP addresses") from exc
+        if not allowed:
+            raise ValueError("ALLOWED_IPS cannot be empty")
+
+        def bounded_int(name: str, default: int, low: int, high: int) -> int:
+            try:
+                value = int(os.getenv(name, str(default)))
+            except ValueError as exc:
+                raise ValueError(f"{name} must be an integer") from exc
+            if not low <= value <= high:
+                raise ValueError(f"{name} must be between {low} and {high}")
+            return value
 
         return cls(
-            allowed_ips=allowed_ips or {"127.0.0.1", "::1"},
-            max_signal_length=max(32, min(max_signal_length, 8192)),
-            max_requests_per_minute=max(10, min(max_requests_per_minute, 5000)),
+            mfa_token=token,
+            audit_key=audit_secret.encode("utf-8"),
+            allowed_ips=allowed,
+            max_signal_length=bounded_int("MAX_SIGNAL_LENGTH", 512, 32, 8192),
+            max_requests_per_minute=bounded_int("MAX_RPM", 120, 1, 5000),
+            cooldown_seconds=bounded_int("COOLDOWN_SECONDS", 30, 1, 3600),
         )
 
 
 class RateLimiter:
-    """Simple fixed-window limiter with per-IP buckets."""
+    """Thread-safe sliding-window limiter with bounded client state."""
 
-    def __init__(self, max_requests: int, interval_seconds: int = 60) -> None:
-        self.max_requests = max_requests
-        self.interval_seconds = interval_seconds
+    def __init__(self, maximum: int, interval: float = 60.0) -> None:
+        self.maximum = maximum
+        self.interval = interval
         self._lock = threading.Lock()
-        self._events: defaultdict[str, deque[float]] = defaultdict(deque)
+        self._events: dict[str, deque[float]] = defaultdict(deque)
 
-    def allow(self, client_ip: str) -> bool:
-        now = time.time()
+    def allow(self, client: str, now: float | None = None) -> bool:
+        current = time.monotonic() if now is None else now
         with self._lock:
-            bucket = self._events[client_ip]
-            while bucket and now - bucket[0] > self.interval_seconds:
+            bucket = self._events.get(client)
+            if bucket is None:
+                if len(self._events) >= MAX_TRACKED_CLIENTS:
+                    oldest = min(self._events, key=lambda key: self._events[key][-1]
+                                 if self._events[key] else 0)
+                    del self._events[oldest]
+                bucket = self._events[client]
+            while bucket and current - bucket[0] >= self.interval:
                 bucket.popleft()
-
-            if len(bucket) >= self.max_requests:
+            if len(bucket) >= self.maximum:
                 return False
-
-            bucket.append(now)
+            bucket.append(current)
             return True
 
 
-class IntegritySigner:
-    """HMAC-based signer for audit-safe request fingerprints."""
+class AdaptiveGuard:
+    """Apply short, bounded cooldowns after repeated rejected requests."""
 
-    def __init__(self, key: bytes | None = None) -> None:
-        self._key = key or secrets.token_bytes(32)
+    def __init__(self, cooldown: int) -> None:
+        self.cooldown = cooldown
+        self._lock = threading.Lock()
+        self._failures: dict[str, deque[float]] = defaultdict(deque)
+        self._blocked_until: dict[str, float] = {}
 
-    def sign(self, message: str) -> str:
-        digest = hmac.new(self._key, message.encode("utf-8"), hashlib.sha256)
-        return digest.hexdigest()
+    def blocked(self, client: str, now: float | None = None) -> bool:
+        current = time.monotonic() if now is None else now
+        with self._lock:
+            return self._blocked_until.get(client, 0.0) > current
+
+    def reject(self, client: str, now: float | None = None) -> None:
+        current = time.monotonic() if now is None else now
+        with self._lock:
+            failures = self._failures[client]
+            while failures and current - failures[0] > 60:
+                failures.popleft()
+            failures.append(current)
+            if len(failures) >= 5:
+                self._blocked_until[client] = current + self.cooldown
+                failures.clear()
 
 
 @dataclass(slots=True)
 class RuntimeState:
-    absorbed_resources: int = 0
-    threat_level: int = 0
-    personas: list[str] = field(default_factory=list)
+    accepted: int = 0
+    rejected: int = 0
     _lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
 
-    def absorb(self, score: int) -> int:
+    def record(self, accepted: bool) -> tuple[int, int]:
         with self._lock:
-            self.absorbed_resources += score
-            self.threat_level = min(100, self.threat_level + max(1, score // 100))
-            return self.absorbed_resources
-
-    def create_persona(self) -> str:
-        with self._lock:
-            persona_id = f"Persona-{len(self.personas) + 1}-{secrets.token_hex(4)}"
-            self.personas.append(persona_id)
-            return persona_id
-
-    def snapshot(self) -> dict[str, Any]:
-        with self._lock:
-            return {
-                "absorbed": self.absorbed_resources,
-                "threat_level": self.threat_level,
-                "personas": self.personas[-5:],
-            }
+            if accepted:
+                self.accepted += 1
+            else:
+                self.rejected += 1
+            return self.accepted, self.rejected
 
 
 class DigitalChakravyuha:
-    """Hardened core processing engine."""
+    """Orchestrate seven explicit, conservative defensive processing layers."""
 
     def __init__(self, config: SecurityConfig | None = None) -> None:
         self.config = config or SecurityConfig.from_env()
-        self.state = RuntimeState()
-        self.signer = IntegritySigner()
         self.rate_limiter = RateLimiter(self.config.max_requests_per_minute)
-        self.mfa_token = os.getenv("MFA_TOKEN") or secrets.token_hex(32)
+        self.adaptive_guard = AdaptiveGuard(self.config.cooldown_seconds)
+        self.state = RuntimeState()
 
-        LOGGER.info("Digital Chakravyuha initialized with hardened defaults")
+    def _audit_id(self, client: str, reason: str, digest: str = "") -> str:
+        message = f"{client}|{reason}|{digest}|{int(time.time())}".encode()
+        return hmac.new(self.config.audit_key, message, hashlib.sha256).hexdigest()[:24]
 
-    def _validate_ip(self, client_ip: str) -> bool:
-        return client_ip in self.config.allowed_ips
+    def process(self, signal: Any, mfa: str, client_ip: str) -> tuple[dict[str, Any], int]:
+        # Layer 1 — Detection: authenticate, normalize the source, and rate-limit.
+        supplied = mfa if isinstance(mfa, str) else ""
+        authenticated = hmac.compare_digest(supplied, self.config.mfa_token)
+        try:
+            client = str(ipaddress.ip_address(client_ip))
+        except ValueError:
+            client = ""
+        if not authenticated:
+            return self._deny(client, "authentication_failed", 401)
+        if not client or client not in self.config.allowed_ips:
+            return self._deny(client or "invalid", "source_denied", 403)
+        if self.adaptive_guard.blocked(client):
+            return self._deny(client, "temporary_cooldown", 429)
+        if not self.rate_limiter.allow(client):
+            return self._deny(client, "rate_limited", 429)
 
-    def _validate_signal(self, signal: str) -> tuple[bool, str | None]:
+        # Layer 2 — Absorption: keep a one-way fingerprint; never retain the signal.
         if not isinstance(signal, str):
-            return False, "Signal must be a string"
-
+            return self._deny(client, "invalid_schema", 400)
         normalized = signal.strip()
+        digest = hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+
+        # Layer 3 — Analysis: enforce strict bounds and reject control characters.
         if not normalized:
-            return False, "Signal cannot be empty"
-
+            return self._deny(client, "empty_signal", 400, digest)
         if len(normalized) > self.config.max_signal_length:
-            return False, "Signal too long"
+            return self._deny(client, "signal_too_long", 413, digest)
+        if any(ord(char) < 32 and char not in "\t\n\r" for char in normalized):
+            return self._deny(client, "invalid_characters", 400, digest)
 
-        uppercase = normalized.upper()
-        if any(token in uppercase for token in self.config.blocked_keywords):
-            return False, "Ethical violation"
+        # Layer 4 — Deception: return an opaque, non-reversible event reference.
+        event_id = self._audit_id(client, "accepted", digest)
 
-        return True, None
+        # Layer 5 — Adaptation: repeated rejected requests receive a short cooldown.
+        # Successful traffic does not silently change policy or learn attacker rules.
+        accepted, rejected = self.state.record(True)
 
-    def _compute_absorb_score(self, signal: str) -> int:
-        # bounded deterministic score to avoid overflow/abuse
-        digest = hashlib.blake2s(signal.encode("utf-8"), digest_size=16).digest()
-        return 50 + (digest[0] % 151)  # 50..200
+        # Layer 6 — Resonance: expose only aggregate local counters; no network sharing.
+        # Layer 7 — Core protection: this endpoint accepts a signal, grants no data access.
+        return {
+            "status": "accepted",
+            "event_id": event_id,
+            "layers": 7,
+            "counters": {"accepted": accepted, "rejected": rejected},
+        }, 200
 
-    def process(self, signal: str, mfa: str, client_ip: str) -> dict[str, Any]:
-        if not hmac.compare_digest(mfa or "", self.mfa_token):
-            return {"status": "rejected", "reason": "Invalid MFA"}
-
-        if not self._validate_ip(client_ip):
-            LOGGER.warning("Denied request from non-allowlisted IP: %s", client_ip)
-            return {"status": "blocked", "reason": "IP denied"}
-
-        if not self.rate_limiter.allow(client_ip):
-            return {"status": "blocked", "reason": "Rate limit exceeded"}
-
-        valid, reason = self._validate_signal(signal)
-        if not valid:
-            return {"status": "blocked", "reason": reason}
-
-        score = self._compute_absorb_score(signal)
-        total = self.state.absorb(score)
-        trap_id = self.signer.sign(f"{client_ip}:{signal}:{total}")[:24]
-
-        if total > 2000 and len(self.state.personas) < 100:
-            self.state.create_persona()
-
-        status = "secure" if self.state.threat_level >= 80 else "active"
-        payload = {"status": status, "trap_id": trap_id}
-        payload.update(self.state.snapshot())
-        return payload
+    def _deny(self, client: str, reason: str, status: int,
+              digest: str = "") -> tuple[dict[str, Any], int]:
+        safe_client = client[:64] or "unknown"
+        self.adaptive_guard.reject(safe_client)
+        _, rejected = self.state.record(False)
+        # Keep logs content-free: no credentials, IP addresses, or raw signal text.
+        LOGGER.warning("request rejected reason=%s", reason)
+        return {
+            "status": "rejected",
+            "reason": reason,
+            "event_id": self._audit_id(safe_client, reason, digest),
+            "counters": {"rejected": rejected},
+        }, status
 
 
 def create_app(core: DigitalChakravyuha | None = None) -> Flask:
     app = Flask(__name__)
+    app.config["MAX_CONTENT_LENGTH"] = MAX_BODY_BYTES
     chakravyuha = core or DigitalChakravyuha()
+
+    @app.errorhandler(413)
+    def request_too_large(_: Exception) -> Any:
+        return jsonify({"status": "rejected", "reason": "request_too_large"}), 413
 
     @app.post("/protect")
     def protect() -> Any:
-        data = request.get_json(silent=True) or {}
-        signal = data.get("signal", "")
-        mfa = request.headers.get("X-MFA-Token", "")
-        client_ip = request.remote_addr or ""
-
-        result = chakravyuha.process(signal=signal, mfa=mfa, client_ip=client_ip)
-        status_code = 200 if result.get("status") in {"active", "secure"} else 403
+        if not request.is_json:
+            return jsonify({"status": "rejected", "reason": "json_required"}), 415
+        data = request.get_json(silent=True)
+        if not isinstance(data, dict):
+            return jsonify({"status": "rejected", "reason": "invalid_json"}), 400
+        result, status_code = chakravyuha.process(
+            signal=data.get("signal"),
+            mfa=request.headers.get("X-MFA-Token", ""),
+            client_ip=request.remote_addr or "",
+        )
         return jsonify(result), status_code
 
     @app.get("/health")
     def health() -> Any:
+        # Liveness only; does not disclose keys, counters, or internal configuration.
         return jsonify({"status": "ok"})
 
     return app
 
 
 if __name__ == "__main__":
+    # Local-only development server. Use a production WSGI server for deployments.
     app = create_app()
-    app.run(host="127.0.0.1", port=8080)
+    app.run(host="127.0.0.1", port=8080, debug=False)
